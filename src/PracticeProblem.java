@@ -58,12 +58,12 @@ public class PracticeProblem{
 
     public static void main(String[] args) {
         UsernameService service = new UsernameService();
-        service.registerUsername("john_doe", "u1001");
+        service.registerUsername("vartikajamwal", "u1001");
         service.registerUsername("admin", "u0001");
 
-        System.out.println("checkAvailability(\"john_doe\") -> " + service.checkAvailability("john_doe"));
-        System.out.println("checkAvailability(\"jane_smith\") -> " + service.checkAvailability("jane_smith"));
-        System.out.println("suggestAlternatives(\"john_doe\") -> " + service.suggestAlternatives("john_doe", 3));
+        System.out.println("checkAvailability(\"vartikajamwal\") -> " + service.checkAvailability("vartikajamwal"));
+        System.out.println("checkAvailability(\"sohambiswas\") -> " + service.checkAvailability("sohambiswas"));
+        System.out.println("suggestAlternatives(\"vartikajamwal\") -> " + service.suggestAlternatives("vartikajamwal", 3));
 
         for (int i = 0; i < 10; i++) service.checkAvailability("admin");
         System.out.println("getMostAttempted() -> " + service.getMostAttempted());
