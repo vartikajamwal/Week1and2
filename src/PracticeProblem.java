@@ -1,87 +1,128 @@
-import java.util.ArrayList;
-import java.util.Comparator;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
 
 public class PracticeProblem {
-    static class TrieNode {
-        Map<Character, TrieNode> children = new HashMap<>();
-        boolean isTerminal;
+    enum SpotStatus { EMPTY, OCCUPIED, DELETED }
+
+    static class Spot {
+        SpotStatus status = SpotStatus.EMPTY;
+        String plate;
+        LocalDateTime entryTime;
     }
 
-    static class Autocomplete {
-        private final TrieNode root = new TrieNode();
-        private final Map<String, Integer> queryFrequency = new HashMap<>();
+    static class ParkingLot {
+        private final Spot[] spots;
+        private final int entranceIndex;
+        private int occupiedCount;
+        private int totalProbes;
+        private int parkOps;
+        private final Map<Integer, Integer> entriesByHour = new HashMap<>();
 
-        void addOrUpdateQuery(String query, int delta) {
-            queryFrequency.merge(query, delta, Integer::sum);
-            TrieNode node = root;
-            for (char c : query.toCharArray()) {
-                node = node.children.computeIfAbsent(c, k -> new TrieNode());
-            }
-            node.isTerminal = true;
+        ParkingLot(int capacity, int entranceIndex) {
+            this.spots = new Spot[capacity];
+            this.entranceIndex = entranceIndex;
+            for (int i = 0; i < capacity; i++) spots[i] = new Spot();
         }
 
-        List<String> search(String prefix, int topK) {
-            TrieNode node = root;
-            for (char c : prefix.toCharArray()) {
-                node = node.children.get(c);
-                if (node == null) return List.of();
+        public synchronized String parkVehicle(String plate) {
+            int preferred = hash(plate);
+            int probes = 0;
+            for (int i = 0; i < spots.length; i++) {
+                int idx = (preferred + i) % spots.length;
+                if (spots[idx].status == SpotStatus.EMPTY || spots[idx].status == SpotStatus.DELETED) {
+                    assign(idx, plate, probes);
+                    return "Assigned spot #" + idx + " (" + probes + " probes)";
+                }
+                probes++;
             }
-
-            PriorityQueue<String> minHeap = new PriorityQueue<>(Comparator.comparingInt(queryFrequency::get));
-            collect(prefix, node, minHeap, topK);
-
-            List<String> result = new ArrayList<>(minHeap);
-            result.sort((a, b) -> Integer.compare(queryFrequency.get(b), queryFrequency.get(a)));
-            return result;
+            return "Parking lot full";
         }
 
-        List<String> suggestCorrections(String input, int maxDistance, int topK) {
-            return queryFrequency.keySet().stream()
-                    .filter(q -> levenshtein(input, q) <= maxDistance)
-                    .sorted((a, b) -> Integer.compare(queryFrequency.get(b), queryFrequency.get(a)))
-                    .limit(topK)
-                    .toList();
-        }
-
-        private void collect(String prefix, TrieNode node, PriorityQueue<String> heap, int topK) {
-            if (node.isTerminal) {
-                heap.offer(prefix);
-                if (heap.size() > topK) heap.poll();
-            }
-            for (Map.Entry<Character, TrieNode> e : node.children.entrySet()) {
-                collect(prefix + e.getKey(), e.getValue(), heap, topK);
-            }
-        }
-
-        private int levenshtein(String a, String b) {
-            int[][] dp = new int[a.length() + 1][b.length() + 1];
-            for (int i = 0; i <= a.length(); i++) dp[i][0] = i;
-            for (int j = 0; j <= b.length(); j++) dp[0][j] = j;
-            for (int i = 1; i <= a.length(); i++) {
-                for (int j = 1; j <= b.length(); j++) {
-                    int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
-                    dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
+        public synchronized int findNearestAvailableSpotToEntrance() {
+            int best = -1;
+            int bestDistance = Integer.MAX_VALUE;
+            for (int i = 0; i < spots.length; i++) {
+                if (spots[i].status == SpotStatus.EMPTY || spots[i].status == SpotStatus.DELETED) {
+                    int distance = circularDistance(entranceIndex, i, spots.length);
+                    if (distance < bestDistance) {
+                        bestDistance = distance;
+                        best = i;
+                    }
                 }
             }
-            return dp[a.length()][b.length()];
+            return best;
+        }
+
+        public synchronized String exitVehicle(String plate, double hourlyRate) {
+            int idx = findVehicle(plate);
+            if (idx == -1) return "Vehicle not found";
+
+            Spot spot = spots[idx];
+            Duration d = Duration.between(spot.entryTime, LocalDateTime.now());
+            double hours = Math.max(1.0, d.toMinutes() / 60.0);
+            double fee = hours * hourlyRate;
+
+            spot.status = SpotStatus.DELETED;
+            spot.plate = null;
+            spot.entryTime = null;
+            occupiedCount--;
+
+            return String.format("Spot #%d freed, Duration: %dh %dm, Fee: $%.2f",
+                    idx, d.toHours(), d.toMinutesPart(), fee);
+        }
+
+        public synchronized String getStatistics() {
+            double occupancy = 100.0 * occupiedCount / spots.length;
+            double avgProbes = parkOps == 0 ? 0 : (double) totalProbes / parkOps;
+            int peakHour = entriesByHour.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse(-1);
+            return String.format("Occupancy: %.1f%%, Avg Probes: %.2f, Peak Hour: %s",
+                    occupancy, avgProbes, peakHour == -1 ? "N/A" : peakHour + "-" + (peakHour + 1));
+        }
+
+        private void assign(int idx, String plate, int probes) {
+            Spot spot = spots[idx];
+            spot.status = SpotStatus.OCCUPIED;
+            spot.plate = plate;
+            spot.entryTime = LocalDateTime.now();
+            occupiedCount++;
+            parkOps++;
+            totalProbes += probes;
+            entriesByHour.merge(LocalDateTime.now().getHour(), 1, Integer::sum);
+        }
+
+        private int findVehicle(String plate) {
+            int preferred = hash(plate);
+            for (int i = 0; i < spots.length; i++) {
+                int idx = (preferred + i) % spots.length;
+                Spot s = spots[idx];
+                if (s.status == SpotStatus.EMPTY) return -1;
+                if (s.status == SpotStatus.OCCUPIED && plate.equals(s.plate)) return idx;
+            }
+            return -1;
+        }
+
+        private int hash(String plate) {
+            return Math.abs(plate.hashCode()) % spots.length;
+        }
+
+        private int circularDistance(int a, int b, int n) {
+            int direct = Math.abs(a - b);
+            return Math.min(direct, n - direct);
         }
     }
 
     public static void main(String[] args) {
-        Autocomplete ac = new Autocomplete();
-        ac.addOrUpdateQuery("java tutorial", 1_234_567);
-        ac.addOrUpdateQuery("javascript", 987_654);
-        ac.addOrUpdateQuery("java download", 456_789);
-        ac.addOrUpdateQuery("java 21 features", 1);
-        ac.addOrUpdateQuery("java collections", 240_000);
-
-        System.out.println("search(\"jav\") -> " + ac.search("jav", 10));
-        ac.addOrUpdateQuery("java 21 features", 2);
-        System.out.println("updateFrequency(java 21 features) -> " + ac.search("java 21", 10));
-        System.out.println("suggestCorrections(\"jvaa\") -> " + ac.suggestCorrections("jvaa", 4, 3));
+        ParkingLot lot = new ParkingLot(10, 0);
+        System.out.println(lot.parkVehicle("ABC-1234"));
+        System.out.println(lot.parkVehicle("ABC-1235"));
+        System.out.println(lot.parkVehicle("XYZ-9999"));
+        System.out.println("Nearest spot to entrance -> #" + lot.findNearestAvailableSpotToEntrance());
+        System.out.println(lot.exitVehicle("ABC-1234", 5.5));
+        System.out.println(lot.getStatistics());
     }
 }
