@@ -1,80 +1,53 @@
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.LongAdder;
 
-public class PracticeProblem {
-    record MatchResult(String documentId, int matchingNgrams, double similarityPercent) {}
+public class PracticeProblem{
+    record Event(String url, String userId, String source) {}
+    record PageStat(String pageUrl, long views, int uniqueUsers) {}
+    record Dashboard(List<PageStat> topPages, Map<String, Long> sourceDistribution) {}
 
-    static class PlagiarismDetector {
-        private final int n;
-        private final Map<String, Set<String>> ngramToDocs = new HashMap<>();
-        private final Map<String, Set<String>> docToNgrams = new HashMap<>();
+    static class AnalyticsEngine {
+        private final ConcurrentHashMap<String, LongAdder> pageViews = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, Set<String>> uniqueVisitors = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<String, LongAdder> sourceCounts = new ConcurrentHashMap<>();
 
-        PlagiarismDetector(int n) {
-            this.n = n;
+        void processEvent(Event event) {
+            pageViews.computeIfAbsent(event.url(), u -> new LongAdder()).increment();
+            uniqueVisitors.computeIfAbsent(event.url(), u -> ConcurrentHashMap.newKeySet()).add(event.userId());
+            sourceCounts.computeIfAbsent(event.source(), s -> new LongAdder()).increment();
         }
 
-        public void indexDocument(String docId, String content) {
-            Set<String> grams = extractNgrams(content);
-            docToNgrams.put(docId, grams);
-            for (String gram : grams) {
-                ngramToDocs.computeIfAbsent(gram, g -> new HashSet<>()).add(docId);
-            }
-        }
+        Dashboard getDashboard() {
+            List<PageStat> topPages = pageViews.entrySet().stream()
+                    .map(e -> new PageStat(
+                            e.getKey(),
+                            e.getValue().longValue(),
+                            uniqueVisitors.getOrDefault(e.getKey(), Set.of()).size()))
+                    .sorted(Comparator.comparingLong(PageStat::views).reversed())
+                    .limit(10)
+                    .toList();
 
-        public List<MatchResult> analyzeDocument(String content) {
-            Set<String> queryNgrams = extractNgrams(content);
-            Map<String, Integer> matchCounts = new HashMap<>();
+            Map<String, Long> sourceDistribution = sourceCounts.entrySet().stream()
+                    .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, e -> e.getValue().longValue()));
 
-            for (String gram : queryNgrams) {
-                for (String docId : ngramToDocs.getOrDefault(gram, Set.of())) {
-                    matchCounts.merge(docId, 1, Integer::sum);
-                }
-            }
-
-            List<MatchResult> results = new ArrayList<>();
-            for (Map.Entry<String, Integer> e : matchCounts.entrySet()) {
-                Set<String> targetNgrams = docToNgrams.getOrDefault(e.getKey(), Set.of());
-                int unionSize = queryNgrams.size() + targetNgrams.size() - e.getValue();
-                double similarity = unionSize == 0 ? 0.0 : (100.0 * e.getValue() / unionSize); // Jaccard
-                results.add(new MatchResult(e.getKey(), e.getValue(), similarity));
-            }
-            results.sort((a, b) -> Double.compare(b.similarityPercent(), a.similarityPercent()));
-            return results;
-        }
-
-        private Set<String> extractNgrams(String content) {
-            String cleaned = content.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\\s]", " ").trim();
-            if (cleaned.isEmpty()) return Set.of();
-
-            String[] words = cleaned.split("\\s+");
-            Set<String> grams = new HashSet<>();
-            for (int i = 0; i + n <= words.length; i++) {
-                StringBuilder sb = new StringBuilder();
-                for (int j = 0; j < n; j++) {
-                    if (j > 0) sb.append(' ');
-                    sb.append(words[i + j]);
-                }
-                grams.add(sb.toString());
-            }
-            return grams;
+            return new Dashboard(topPages, sourceDistribution);
         }
     }
 
     public static void main(String[] args) {
-        PlagiarismDetector detector = new PlagiarismDetector(5);
-        detector.indexDocument("essay_089", "data structures and algorithms are core in computer science education for all students");
-        detector.indexDocument("essay_092", "hash tables and algorithms are core in computer science education for all learners");
+        AnalyticsEngine engine = new AnalyticsEngine();
+        engine.processEvent(new Event("/article/breaking-news", "user_123", "google"));
+        engine.processEvent(new Event("/article/breaking-news", "user_456", "facebook"));
+        engine.processEvent(new Event("/sports/championship", "user_111", "direct"));
+        engine.processEvent(new Event("/sports/championship", "user_222", "google"));
+        engine.processEvent(new Event("/sports/championship", "user_111", "google"));
 
-        var result = detector.analyzeDocument("hash tables and algorithms are core in computer science education for all students today");
-        for (MatchResult r : result) {
-            String label = r.similarityPercent() >= 30.0 ? "PLAGIARISM DETECTED" : "suspicious";
-            System.out.printf("%s -> %d matching n-grams, similarity=%.1f%% (%s)%n",
-                    r.documentId(), r.matchingNgrams(), r.similarityPercent(), label);
-        }
+        Dashboard dash = engine.getDashboard();
+        System.out.println("Top Pages: " + dash.topPages());
+        System.out.println("Traffic Sources: " + dash.sourceDistribution());
     }
 }
