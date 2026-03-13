@@ -1,87 +1,101 @@
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
 public class PracticeProblem {
-    record Transaction(int id, int amount, String merchant, String account, LocalDateTime time) {}
+    record VideoData(String videoId, String payload) {}
 
-    static class Analyzer {
-        List<List<Transaction>> findTwoSum(List<Transaction> txs, int target) {
-            Map<Integer, List<Transaction>> byAmount = new HashMap<>();
-            List<List<Transaction>> pairs = new ArrayList<>();
+    static class LRUCache<K, V> extends LinkedHashMap<K, V> {
+        private final int capacity;
 
-            for (Transaction tx : txs) {
-                int needed = target - tx.amount();
-                for (Transaction seen : byAmount.getOrDefault(needed, List.of())) {
-                    pairs.add(List.of(seen, tx));
-                }
-                byAmount.computeIfAbsent(tx.amount(), k -> new ArrayList<>()).add(tx);
-            }
-            return pairs;
+        LRUCache(int capacity) {
+            super(16, 0.75f, true);
+            this.capacity = capacity;
         }
 
-        List<List<Transaction>> findTwoSumWithinWindow(List<Transaction> txs, int target, Duration window) {
-            List<List<Transaction>> pairs = findTwoSum(txs, target);
-            return pairs.stream()
-                    .filter(p -> Duration.between(p.get(0).time(), p.get(1).time()).abs().compareTo(window) <= 0)
-                    .toList();
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+            return size() > capacity;
+        }
+    }
+
+    static class MultiLevelCache {
+        private final LRUCache<String, VideoData> l1; // in-memory
+        private final LRUCache<String, VideoData> l2; // simulated SSD cache
+        private final Map<String, VideoData> l3Database; // source of truth
+        private final Map<String, Integer> accessCount = new HashMap<>();
+        private final int promoteThreshold;
+
+        private long requests;
+        private long l1Hits;
+        private long l2Hits;
+        private long l3Hits;
+
+        MultiLevelCache(int l1Size, int l2Size, int promoteThreshold, Map<String, VideoData> db) {
+            this.l1 = new LRUCache<>(l1Size);
+            this.l2 = new LRUCache<>(l2Size);
+            this.promoteThreshold = promoteThreshold;
+            this.l3Database = db;
         }
 
-        List<List<Transaction>> findKSum(List<Transaction> txs, int k, int target) {
-            List<List<Transaction>> results = new ArrayList<>();
-            backtrack(txs, 0, k, target, new ArrayList<>(), results);
-            return results;
+        public synchronized VideoData getVideo(String videoId) {
+            requests++;
+
+            VideoData data = l1.get(videoId);
+            if (data != null) {
+                l1Hits++;
+                return data;
+            }
+
+            data = l2.get(videoId);
+            if (data != null) {
+                l2Hits++;
+                int count = accessCount.merge(videoId, 1, Integer::sum);
+                if (count >= promoteThreshold) l1.put(videoId, data);
+                return data;
+            }
+
+            data = l3Database.get(videoId);
+            if (data != null) {
+                l3Hits++;
+                l2.put(videoId, data);
+                accessCount.merge(videoId, 1, Integer::sum);
+            }
+            return data;
         }
 
-        List<String> detectDuplicates(List<Transaction> txs) {
-            Map<String, Set<String>> grouped = new HashMap<>();
-            for (Transaction tx : txs) {
-                String key = tx.amount() + "|" + tx.merchant();
-                grouped.computeIfAbsent(key, k -> new HashSet<>()).add(tx.account());
-            }
-
-            List<String> duplicates = new ArrayList<>();
-            for (var e : grouped.entrySet()) {
-                if (e.getValue().size() > 1) {
-                    duplicates.add("{amount+merchant=" + e.getKey() + ", accounts=" + e.getValue() + "}");
-                }
-            }
-            return duplicates;
+        public synchronized void invalidate(String videoId) {
+            l1.remove(videoId);
+            l2.remove(videoId);
+            accessCount.remove(videoId);
         }
 
-        private void backtrack(List<Transaction> txs, int idx, int k, int target,
-                               List<Transaction> curr, List<List<Transaction>> out) {
-            if (k == 0) {
-                if (target == 0) out.add(new ArrayList<>(curr));
-                return;
-            }
-            if (idx == txs.size()) return;
+        public synchronized void updateContent(VideoData newData) {
+            l3Database.put(newData.videoId(), newData);
+            invalidate(newData.videoId());
+        }
 
-            for (int i = idx; i < txs.size(); i++) {
-                curr.add(txs.get(i));
-                backtrack(txs, i + 1, k - 1, target - txs.get(i).amount(), curr, out);
-                curr.remove(curr.size() - 1);
-            }
+        public synchronized String getStatistics() {
+            double l1Rate = requests == 0 ? 0 : l1Hits * 100.0 / requests;
+            double l2Rate = requests == 0 ? 0 : l2Hits * 100.0 / requests;
+            double l3Rate = requests == 0 ? 0 : l3Hits * 100.0 / requests;
+            double overall = requests == 0 ? 0 : (l1Hits + l2Hits + l3Hits) * 100.0 / requests;
+            return String.format("L1: Hit Rate %.1f%%, L2: Hit Rate %.1f%%, L3: Hit Rate %.1f%%, Overall: %.1f%%",
+                    l1Rate, l2Rate, l3Rate, overall);
         }
     }
 
     public static void main(String[] args) {
-        List<Transaction> txs = List.of(
-                new Transaction(1, 500, "Store A", "acc1", LocalDateTime.of(2025, 1, 1, 10, 0)),
-                new Transaction(2, 300, "Store B", "acc2", LocalDateTime.of(2025, 1, 1, 10, 15)),
-                new Transaction(3, 200, "Store C", "acc3", LocalDateTime.of(2025, 1, 1, 10, 30)),
-                new Transaction(4, 500, "Store A", "acc9", LocalDateTime.of(2025, 1, 1, 10, 45))
-        );
+        Map<String, VideoData> db = new HashMap<>();
+        db.put("video_123", new VideoData("video_123", "movie-data"));
+        db.put("video_999", new VideoData("video_999", "documentary-data"));
 
-        Analyzer analyzer = new Analyzer();
-        System.out.println("findTwoSum(target=500) -> " + analyzer.findTwoSum(txs, 500));
-        System.out.println("findTwoSumWithinWindow(1h) -> " + analyzer.findTwoSumWithinWindow(txs, 500, Duration.ofHours(1)));
-        System.out.println("findKSum(k=3,target=1000) -> " + analyzer.findKSum(txs, 3, 1000));
-        System.out.println("detectDuplicates() -> " + analyzer.detectDuplicates(txs));
+        MultiLevelCache cache = new MultiLevelCache(2, 3, 2, db);
+        System.out.println("getVideo(video_123) -> " + cache.getVideo("video_123")); // l3
+        System.out.println("getVideo(video_123) -> " + cache.getVideo("video_123")); // l2
+        System.out.println("getVideo(video_123) -> " + cache.getVideo("video_123")); // l2->l1 promotion
+        System.out.println("getVideo(video_123) -> " + cache.getVideo("video_123")); // l1
+        System.out.println("getVideo(video_999) -> " + cache.getVideo("video_999"));
+        System.out.println("getStatistics() -> " + cache.getStatistics());
     }
 }
