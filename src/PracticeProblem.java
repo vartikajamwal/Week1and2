@@ -1,91 +1,80 @@
-import java.time.Instant;
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.LongAdder;
+import java.util.Set;
 
 public class PracticeProblem {
-    interface UpstreamDns {
-        String resolve(String domain);
-    }
+    record MatchResult(String documentId, int matchingNgrams, double similarityPercent) {}
 
-    record DNSEntry(String ipAddress, Instant expiresAt) {
-        boolean expired() {
-            return Instant.now().isAfter(expiresAt);
+    static class PlagiarismDetector {
+        private final int n;
+        private final Map<String, Set<String>> ngramToDocs = new HashMap<>();
+        private final Map<String, Set<String>> docToNgrams = new HashMap<>();
+
+        PlagiarismDetector(int n) {
+            this.n = n;
         }
-    }
 
-    static class DNSCache {
-        private final LinkedHashMap<String, DNSEntry> cache;
-        private final UpstreamDns upstreamDns;
-        private final LongAdder hits = new LongAdder();
-        private final LongAdder misses = new LongAdder();
-        private final LongAdder totalLookupNanos = new LongAdder();
-        private final ScheduledExecutorService cleaner;
+        public void indexDocument(String docId, String content) {
+            Set<String> grams = extractNgrams(content);
+            docToNgrams.put(docId, grams);
+            for (String gram : grams) {
+                ngramToDocs.computeIfAbsent(gram, g -> new HashSet<>()).add(docId);
+            }
+        }
 
-        DNSCache(int maxSize, UpstreamDns upstreamDns) {
-            this.upstreamDns = upstreamDns;
-            this.cache = new LinkedHashMap<>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, DNSEntry> eldest) {
-                    return size() > maxSize;
+        public List<MatchResult> analyzeDocument(String content) {
+            Set<String> queryNgrams = extractNgrams(content);
+            Map<String, Integer> matchCounts = new HashMap<>();
+
+            for (String gram : queryNgrams) {
+                for (String docId : ngramToDocs.getOrDefault(gram, Set.of())) {
+                    matchCounts.merge(docId, 1, Integer::sum);
                 }
-            };
-
-            this.cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "dns-cleaner");
-                t.setDaemon(true);
-                return t;
-            });
-            cleaner.scheduleAtFixedRate(this::cleanupExpired, 2, 2, TimeUnit.SECONDS);
-        }
-
-        public synchronized String resolve(String domain, int ttlSeconds) {
-            long start = System.nanoTime();
-            DNSEntry entry = cache.get(domain);
-            if (entry != null && !entry.expired()) {
-                hits.increment();
-                totalLookupNanos.add(System.nanoTime() - start);
-                return "Cache HIT -> " + entry.ipAddress();
             }
 
-            misses.increment();
-            String ip = upstreamDns.resolve(domain);
-            cache.put(domain, new DNSEntry(ip, Instant.now().plusSeconds(ttlSeconds)));
-            totalLookupNanos.add(System.nanoTime() - start);
-            return "Cache MISS -> " + ip;
+            List<MatchResult> results = new ArrayList<>();
+            for (Map.Entry<String, Integer> e : matchCounts.entrySet()) {
+                Set<String> targetNgrams = docToNgrams.getOrDefault(e.getKey(), Set.of());
+                int unionSize = queryNgrams.size() + targetNgrams.size() - e.getValue();
+                double similarity = unionSize == 0 ? 0.0 : (100.0 * e.getValue() / unionSize); // Jaccard
+                results.add(new MatchResult(e.getKey(), e.getValue(), similarity));
+            }
+            results.sort((a, b) -> Double.compare(b.similarityPercent(), a.similarityPercent()));
+            return results;
         }
 
-        public synchronized String getCacheStats() {
-            long h = hits.longValue();
-            long m = misses.longValue();
-            long total = h + m;
-            double hitRate = total == 0 ? 0.0 : (h * 100.0 / total);
-            double avgMs = total == 0 ? 0.0 : (totalLookupNanos.doubleValue() / total) / 1_000_000.0;
-            return String.format("Hit Rate: %.1f%%, Avg Lookup Time: %.3fms", hitRate, avgMs);
-        }
+        private Set<String> extractNgrams(String content) {
+            String cleaned = content.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\\s]", " ").trim();
+            if (cleaned.isEmpty()) return Set.of();
 
-        private synchronized void cleanupExpired() {
-            cache.entrySet().removeIf(e -> e.getValue().expired());
-        }
-
-        public void close() {
-            cleaner.shutdownNow();
+            String[] words = cleaned.split("\\s+");
+            Set<String> grams = new HashSet<>();
+            for (int i = 0; i + n <= words.length; i++) {
+                StringBuilder sb = new StringBuilder();
+                for (int j = 0; j < n; j++) {
+                    if (j > 0) sb.append(' ');
+                    sb.append(words[i + j]);
+                }
+                grams.add(sb.toString());
+            }
+            return grams;
         }
     }
 
-    public static void main(String[] args) throws Exception {
-        UpstreamDns fakeUpstream = domain -> "172.217.14." + (Math.abs(domain.hashCode()) % 200 + 1);
-        DNSCache cache = new DNSCache(3, fakeUpstream);
+    public static void main(String[] args) {
+        PlagiarismDetector detector = new PlagiarismDetector(5);
+        detector.indexDocument("essay_089", "data structures and algorithms are core in computer science education for all students");
+        detector.indexDocument("essay_092", "hash tables and algorithms are core in computer science education for all learners");
 
-        System.out.println("resolve(google.com) -> " + cache.resolve("google.com", 2));
-        System.out.println("resolve(google.com) -> " + cache.resolve("google.com", 2));
-        Thread.sleep(2100);
-        System.out.println("resolve(google.com) -> " + cache.resolve("google.com", 2));
-        System.out.println("getCacheStats() -> " + cache.getCacheStats());
-
-        cache.close();
+        var result = detector.analyzeDocument("hash tables and algorithms are core in computer science education for all students today");
+        for (MatchResult r : result) {
+            String label = r.similarityPercent() >= 30.0 ? "PLAGIARISM DETECTED" : "suspicious";
+            System.out.printf("%s -> %d matching n-grams, similarity=%.1f%% (%s)%n",
+                    r.documentId(), r.matchingNgrams(), r.similarityPercent(), label);
+        }
     }
 }
