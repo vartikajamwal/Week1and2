@@ -1,128 +1,87 @@
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class PracticeProblem {
-    enum SpotStatus { EMPTY, OCCUPIED, DELETED }
+    record Transaction(int id, int amount, String merchant, String account, LocalDateTime time) {}
 
-    static class Spot {
-        SpotStatus status = SpotStatus.EMPTY;
-        String plate;
-        LocalDateTime entryTime;
-    }
+    static class Analyzer {
+        List<List<Transaction>> findTwoSum(List<Transaction> txs, int target) {
+            Map<Integer, List<Transaction>> byAmount = new HashMap<>();
+            List<List<Transaction>> pairs = new ArrayList<>();
 
-    static class ParkingLot {
-        private final Spot[] spots;
-        private final int entranceIndex;
-        private int occupiedCount;
-        private int totalProbes;
-        private int parkOps;
-        private final Map<Integer, Integer> entriesByHour = new HashMap<>();
-
-        ParkingLot(int capacity, int entranceIndex) {
-            this.spots = new Spot[capacity];
-            this.entranceIndex = entranceIndex;
-            for (int i = 0; i < capacity; i++) spots[i] = new Spot();
-        }
-
-        public synchronized String parkVehicle(String plate) {
-            int preferred = hash(plate);
-            int probes = 0;
-            for (int i = 0; i < spots.length; i++) {
-                int idx = (preferred + i) % spots.length;
-                if (spots[idx].status == SpotStatus.EMPTY || spots[idx].status == SpotStatus.DELETED) {
-                    assign(idx, plate, probes);
-                    return "Assigned spot #" + idx + " (" + probes + " probes)";
+            for (Transaction tx : txs) {
+                int needed = target - tx.amount();
+                for (Transaction seen : byAmount.getOrDefault(needed, List.of())) {
+                    pairs.add(List.of(seen, tx));
                 }
-                probes++;
+                byAmount.computeIfAbsent(tx.amount(), k -> new ArrayList<>()).add(tx);
             }
-            return "Parking lot full";
+            return pairs;
         }
 
-        public synchronized int findNearestAvailableSpotToEntrance() {
-            int best = -1;
-            int bestDistance = Integer.MAX_VALUE;
-            for (int i = 0; i < spots.length; i++) {
-                if (spots[i].status == SpotStatus.EMPTY || spots[i].status == SpotStatus.DELETED) {
-                    int distance = circularDistance(entranceIndex, i, spots.length);
-                    if (distance < bestDistance) {
-                        bestDistance = distance;
-                        best = i;
-                    }
+        List<List<Transaction>> findTwoSumWithinWindow(List<Transaction> txs, int target, Duration window) {
+            List<List<Transaction>> pairs = findTwoSum(txs, target);
+            return pairs.stream()
+                    .filter(p -> Duration.between(p.get(0).time(), p.get(1).time()).abs().compareTo(window) <= 0)
+                    .toList();
+        }
+
+        List<List<Transaction>> findKSum(List<Transaction> txs, int k, int target) {
+            List<List<Transaction>> results = new ArrayList<>();
+            backtrack(txs, 0, k, target, new ArrayList<>(), results);
+            return results;
+        }
+
+        List<String> detectDuplicates(List<Transaction> txs) {
+            Map<String, Set<String>> grouped = new HashMap<>();
+            for (Transaction tx : txs) {
+                String key = tx.amount() + "|" + tx.merchant();
+                grouped.computeIfAbsent(key, k -> new HashSet<>()).add(tx.account());
+            }
+
+            List<String> duplicates = new ArrayList<>();
+            for (var e : grouped.entrySet()) {
+                if (e.getValue().size() > 1) {
+                    duplicates.add("{amount+merchant=" + e.getKey() + ", accounts=" + e.getValue() + "}");
                 }
             }
-            return best;
+            return duplicates;
         }
 
-        public synchronized String exitVehicle(String plate, double hourlyRate) {
-            int idx = findVehicle(plate);
-            if (idx == -1) return "Vehicle not found";
-
-            Spot spot = spots[idx];
-            Duration d = Duration.between(spot.entryTime, LocalDateTime.now());
-            double hours = Math.max(1.0, d.toMinutes() / 60.0);
-            double fee = hours * hourlyRate;
-
-            spot.status = SpotStatus.DELETED;
-            spot.plate = null;
-            spot.entryTime = null;
-            occupiedCount--;
-
-            return String.format("Spot #%d freed, Duration: %dh %dm, Fee: $%.2f",
-                    idx, d.toHours(), d.toMinutesPart(), fee);
-        }
-
-        public synchronized String getStatistics() {
-            double occupancy = 100.0 * occupiedCount / spots.length;
-            double avgProbes = parkOps == 0 ? 0 : (double) totalProbes / parkOps;
-            int peakHour = entriesByHour.entrySet().stream()
-                    .max(Map.Entry.comparingByValue())
-                    .map(Map.Entry::getKey)
-                    .orElse(-1);
-            return String.format("Occupancy: %.1f%%, Avg Probes: %.2f, Peak Hour: %s",
-                    occupancy, avgProbes, peakHour == -1 ? "N/A" : peakHour + "-" + (peakHour + 1));
-        }
-
-        private void assign(int idx, String plate, int probes) {
-            Spot spot = spots[idx];
-            spot.status = SpotStatus.OCCUPIED;
-            spot.plate = plate;
-            spot.entryTime = LocalDateTime.now();
-            occupiedCount++;
-            parkOps++;
-            totalProbes += probes;
-            entriesByHour.merge(LocalDateTime.now().getHour(), 1, Integer::sum);
-        }
-
-        private int findVehicle(String plate) {
-            int preferred = hash(plate);
-            for (int i = 0; i < spots.length; i++) {
-                int idx = (preferred + i) % spots.length;
-                Spot s = spots[idx];
-                if (s.status == SpotStatus.EMPTY) return -1;
-                if (s.status == SpotStatus.OCCUPIED && plate.equals(s.plate)) return idx;
+        private void backtrack(List<Transaction> txs, int idx, int k, int target,
+                               List<Transaction> curr, List<List<Transaction>> out) {
+            if (k == 0) {
+                if (target == 0) out.add(new ArrayList<>(curr));
+                return;
             }
-            return -1;
-        }
+            if (idx == txs.size()) return;
 
-        private int hash(String plate) {
-            return Math.abs(plate.hashCode()) % spots.length;
-        }
-
-        private int circularDistance(int a, int b, int n) {
-            int direct = Math.abs(a - b);
-            return Math.min(direct, n - direct);
+            for (int i = idx; i < txs.size(); i++) {
+                curr.add(txs.get(i));
+                backtrack(txs, i + 1, k - 1, target - txs.get(i).amount(), curr, out);
+                curr.remove(curr.size() - 1);
+            }
         }
     }
 
     public static void main(String[] args) {
-        ParkingLot lot = new ParkingLot(10, 0);
-        System.out.println(lot.parkVehicle("ABC-1234"));
-        System.out.println(lot.parkVehicle("ABC-1235"));
-        System.out.println(lot.parkVehicle("XYZ-9999"));
-        System.out.println("Nearest spot to entrance -> #" + lot.findNearestAvailableSpotToEntrance());
-        System.out.println(lot.exitVehicle("ABC-1234", 5.5));
-        System.out.println(lot.getStatistics());
+        List<Transaction> txs = List.of(
+                new Transaction(1, 500, "Store A", "acc1", LocalDateTime.of(2025, 1, 1, 10, 0)),
+                new Transaction(2, 300, "Store B", "acc2", LocalDateTime.of(2025, 1, 1, 10, 15)),
+                new Transaction(3, 200, "Store C", "acc3", LocalDateTime.of(2025, 1, 1, 10, 30)),
+                new Transaction(4, 500, "Store A", "acc9", LocalDateTime.of(2025, 1, 1, 10, 45))
+        );
+
+        Analyzer analyzer = new Analyzer();
+        System.out.println("findTwoSum(target=500) -> " + analyzer.findTwoSum(txs, 500));
+        System.out.println("findTwoSumWithinWindow(1h) -> " + analyzer.findTwoSumWithinWindow(txs, 500, Duration.ofHours(1)));
+        System.out.println("findKSum(k=3,target=1000) -> " + analyzer.findKSum(txs, 3, 1000));
+        System.out.println("detectDuplicates() -> " + analyzer.detectDuplicates(txs));
     }
 }
